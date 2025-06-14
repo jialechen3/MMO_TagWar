@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MMO Register</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='login.css') }}">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: url("{{ url_for('static', filename='images/tag_battle_bg.png') }}") no-repeat center -530px fixed;
+      background-size: cover;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .login-box {
+      background-color: rgba(0, 0, 0, 0.75);
+      padding: 40px;
+      border-radius: 12px;
+      box-shadow: 0 0 15px rgba(0, 0, 0, 0.5);
+      color: #fff;
+      width: 320px;
+      text-align: center;
+    }
+
+    .login-box h1 {
+      margin-bottom: 20px;
+      font-size: 28px;
+      letter-spacing: 1px;
+    }
+
+    .login-box input[type="text"],
+    .login-box input[type="password"] {
+      width: 100%;
+      padding: 12px;
+      margin: 10px 0;
+      border: none;
+      border-radius: 8px;
+      background-color: #1e2a38;
+      color: #fff;
+      font-size: 16px;
+    }
+
+    .login-box input::placeholder {
+      color: #b0b8c1;
+    }
+
+    .login-box button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 10px;
+      border: none;
+      border-radius: 8px;
+      background-color: #4f46e5;
+      color: white;
+      font-size: 16px;
+      cursor: pointer;
+      transition: background-color 0.3s ease;
+    }
+
+    .login-box button:hover {
+      background-color: #6366f1;
+    }
+
+    .login-box p {
+      margin-top: 15px;
+      font-size: 14px;
+      color: #ccc;
+    }
+
+    .login-box a {
+      color: #a5b4fc;
+      text-decoration: none;
+    }
+
+    .login-box a:hover {
+      text-decoration: underline;
+    }
+
+      .error-message {
+    color: #ff4c4c;   /* 🔥 Bright red text */
+    margin-bottom: 15px;
+    font-size: 14px;
+    font-weight: bold;
+  }
+  </style>
+</head>
+<body>
+  <div class="login-box">
+    <h1>Join the Battle</h1>
+      {% if error %}
+  <div class="error-message">{{ error }}</div>
+{% endif %}
+
+    <form action="/register" method="POST">
+      <input type="text" name="username" placeholder="Create a username" required>
+      <input type="password" name="password" placeholder="Create a password" required>
+      <button type="submit">Register</button>
+    </form>
+    <p>Already have an account? <a href="/login">Return to login</a></p>
+  </div>
+</body>
+</html>

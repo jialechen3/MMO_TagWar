@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Battlefield</title>
+  <style>
+    :root {
+      --ui-bg: rgba(0,0,0,.55);
+      --ui-pad: 6px 16px;
+      --ui-br: 12px;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: url('/static/images/tag_battle_bg.png') no-repeat center -530px fixed;
+      background-size: cover;
+      height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      cursor: crosshair;
+    }
+    canvas {
+      background: #1e1e2f;
+      border-radius: 12px;
+      box-shadow: 0 0 15px rgba(0,0,0,.5);
+      position: relative;
+      z-index: 10;
+    }
+
+    /* ---------- HUD ---------- */
+    #scoreboard, #roundSmall, #teamSmall {
+      background: var(--ui-bg);
+      padding: var(--ui-pad);
+      border-radius: var(--ui-br);
+      backdrop-filter: blur(4px);
+    }
+
+    #scoreboard {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 40px;
+      font-size: 24px;
+      z-index: 999;
+      user-select: none;
+    }
+    #roundSmall {
+      position: fixed;
+      top: 20px;
+      left: 20px;
+      font-size: 24px;
+      color: #fff;
+      z-index: 1000;
+    }
+    #teamSmall {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      font-size: 24px;
+      font-weight: bold;
+      color: #fff;
+      z-index: 1000;
+    }
+    #roundBanner {
+      position: fixed;
+      top: calc(50% - 50px);
+      left: 0;
+      right: 0;
+      text-align: center;
+      font-size: 64px;
+      font-weight: 700;
+      color: #fff;
+      text-shadow: 3px 3px 10px #000;
+      z-index: 1000;
+      display: none;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+<!-- live team count (updates via JS) -->
+<div id="scoreboard">
+  <span style="color:#ff5050;">🔴 Red <span id="redLive">0</span></span>
+  <span style="color:#4ea1ff;">🔵 Blue <span id="blueLive">0</span></span>
+</div>
+
+<!-- corner clock and team indicator -->
+<div id="roundSmall">Round 0 · --:--</div>
+<div id="teamSmall">Team: --</div>
+
+<!-- center big banner -->
+<div id="roundBanner"></div>
+
+<!-- map canvas -->
+<canvas id="game" width="1200" height="750"></canvas>
+<canvas
+  id="minimap" width="150" height="150"
+  style="
+    position: absolute;
+    bottom: 20px;
+    right: 20px;
+    background: rgba(0, 0, 0, 0.5);
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.7);
+  ">
+</canvas>
+<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+const socket = io('/battlefield', { query: { page: 'battlefield' } });
+const minimap = document.getElementById('minimap');
+
+const minimapTerrain = document.createElement('canvas');
+minimapTerrain.width = minimap.width;
+minimapTerrain.height = minimap.height;
+const minimapTerrainCtx = minimapTerrain.getContext('2d');
+const avatarCache = {};
+const avatarFailed = {};
+
+const roundBanner = document.getElementById('roundBanner');
+const roundSmall = document.getElementById('roundSmall');
+const teamSmall = document.getElementById('teamSmall');
+const redLiveEl = document.getElementById('redLive');
+const blueLiveEl = document.getElementById('blueLive');
+
+let currentRound = 0;
+let currentTaggers = '';
+let roundTimeLeft = 0;
+let roundTimerId = null;
+let bannerHideTimer = null;
+
+let playerId = null, players = {}, deadPlayers = {}, respawnTimers = {}, pos = { x: 0.0, y: 0.0 };
+
+function flashNumber(txt) {
+  roundBanner.textContent = txt;
+  roundBanner.style.display = 'block';
+  setTimeout(() => { roundBanner.style.display = 'none'; }, 900);
+}
+
+function flashBanner(txt, ms = 3000) {
+  roundBanner.textContent = txt;
+  roundBanner.style.display = 'block';
+  if (bannerHideTimer) clearTimeout(bannerHideTimer);
+  if (ms !== null) {
+    bannerHideTimer = setTimeout(() => {
+      roundBanner.style.display = 'none';
+      bannerHideTimer = null;
+    }, ms);
+  }
+}
+
+function startCountdown(total) {
+  clearInterval(roundTimerId);
+  roundTimeLeft = total;
+  paintCorner();
+  roundTimerId = setInterval(() => {
+    roundTimeLeft--;
+    paintCorner();
+    if (roundTimeLeft <= 0) clearInterval(roundTimerId);
+  }, 1000);
+}
+
+function paintCorner() {
+  const m = String(Math.floor(roundTimeLeft / 60)).padStart(2, '0');
+  const s = String(roundTimeLeft % 60).padStart(2, '0');
+  const tag = currentTaggers ? ` · Taggers: ${currentTaggers.toUpperCase()}` : '';
+  roundSmall.textContent = `Round ${currentRound}${tag} · ${m}:${s}`;
+}
+
+const roomId = new URLSearchParams(location.search).get('room');
+if (!roomId) { alert('Room ID missing'); throw new Error('No room id'); }
+
+const TILE_SIZE = 40.0, MAP_WIDTH = 30.0, MAP_HEIGHT = 20.0;
+let terrain = Array.from({ length: MAP_HEIGHT }, () => Array(MAP_WIDTH).fill(0));
+
+
+socket.on('player_positions', list => {
+  players = {};
+  list.forEach(p => {
+    players[p.id] = p;
+    const src = p.avatar;
+    if (src) {
+      if (!avatarCache[src] && !avatarFailed[src]) {
+        const img = new Image();
+        img.onload = () => draw();
+        img.onerror = () => { avatarFailed[src] = true; draw(); };
+        img.src = '/static/avatars/' + src;
+        avatarCache[src] = img;
+      }
+    }
+  });
+
+  if (players[playerId]) {
+    pos = { x: players[playerId].x, y: players[playerId].y };
+    // 🆕 Update teamSmall
+    const myTeam = players[playerId].team;
+    teamSmall.textContent = `Team: ${myTeam ? myTeam.toUpperCase() : '--'}`;
+    teamSmall.style.color = myTeam === 'red' ? '#ff5050' :
+                             myTeam === 'blue' ? '#4ea1ff' :
+                             '#ffffff';
+  }
+
+  redLiveEl.textContent = list.filter(p => p.team === 'red').length;
+  blueLiveEl.textContent = list.filter(p => p.team === 'blue').length;
+  draw();
+  drawMinimap(players);
+});
+socket.on('player_moved', data => {
+  const { id, x, y } = data;
+
+  if (players[id]) {
+    players[id].x = x;
+    players[id].y = y;
+
+    if (id === playerId) {
+      pos = { x, y };  // Update local player's position
+    }
+
+    draw();
+  }
+});
+
+socket.on('player_tagged', ({ target }) => {
+  deadPlayers[target] = true;
+  respawnTimers[target] = 5;
+  const t = setInterval(() => {
+    respawnTimers[target]--;
+    if (respawnTimers[target] <= 0) {
+      clearInterval(t);
+      delete respawnTimers[target];
+      deadPlayers[target] = false;
+    }
+  }, 1000);
+});
+
+socket.on('player_respawned', ({ player }) => {
+  deadPlayers[player] = false;
+  delete respawnTimers[player];
+  socket.emit('request_positions');
+});
+
+socket.on('round_prep', d => {
+  flashNumber(d.seconds);
+  currentRound = d.next_round;
+  currentTaggers = d.taggers;
+  roundTimeLeft = d.seconds;
+  paintCorner();
+});
+socket.on('round_start', d => {
+  currentRound = d.round;
+  currentTaggers = d.taggers;
+  flashBanner(`ROUND ${currentRound} – ${currentTaggers.toUpperCase()} TAGGERS`, 3000);
+  startCountdown(d.duration);
+});
+socket.on('round_end', d => {
+  flashBanner(`⏱ Round ${d.round} over`, 3000);
+});
+
+socket.on('match_over', ({ winner }) => {
+  clearInterval(roundTimerId);
+  if (bannerHideTimer) clearTimeout(bannerHideTimer);
+
+  const headline = winner === 'red' ? 'Red Team Wins!' :
+                   winner === 'blue' ? 'Blue Team Wins!' :
+                   'Match Draw!';
+  roundBanner.innerHTML = `
+    <div style="margin-bottom:20px;">🏆 ${headline}</div>
+    <button id="toLobbyBtn" class="lobby-btn">↩ Back&nbsp;to&nbsp;Lobby</button>
+  `;
+  roundBanner.style.display = 'block';
+  roundBanner.style.pointerEvents = 'auto';
+
+  document.getElementById('toLobbyBtn').onclick = () => location.href = '/lobby';
+});
+
+function hideBanner() {
+  roundBanner.style.display = 'none';
+  roundBanner.style.pointerEvents = 'none';
+}
+
+fetch('/api/whoami', { credentials: 'include' })
+  .then(r => r.json()).then(d => {
+    if (!d.username) { location = '/login'; return; }
+    playerId = d.username;
+    socket.emit('join_room', { room_id: roomId, player: playerId });
+    setInterval(draw, 1000 / 60);
+  });
+
+const keyState = {
+  ArrowUp: false,
+  ArrowDown: false,
+  ArrowLeft: false,
+  ArrowRight: false
+};
+
+document.addEventListener('keydown', e => {
+  // If the key is one of the four arrows, mark it as pressed
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+    keyState[e.key] = true;  // Mark the key as pressed
+  }
+});
+
+document.addEventListener('keyup', e => {
+  // When the key is released, mark it as not pressed
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) {
+    keyState[e.key] = false;  // Mark the key as not pressed
+  }
+});
+
+function gameLoop() {
+  if (Object.values(keyState).includes(true)) {
+    movePlayer();  // Call movePlayer if any key is pressed
+  }
+
+  requestAnimationFrame(gameLoop);  // Call gameLoop again for the next frame
+}
+
+// Start the game loop
+gameLoop();
+
+function movePlayer() {
+  let new_x = pos.x;
+  let new_y = pos.y;
+  if (keyState['ArrowUp']) new_y -=0.1;
+  if (keyState['ArrowDown']) new_y +=0.1;
+  if (keyState['ArrowLeft']) new_x -=0.1;
+  if (keyState['ArrowRight']) new_x +=0.1;
+
+  if(pos.x === new_x && pos.y === new_y) {
+      return;
+  }
+
+  socket.emit('move', {
+    roomId,
+    player: playerId,
+    direction: keyState
+  });
+}
+
+socket.on('load_terrain', (data) => {
+
+  if (Array.isArray(data.terrain)) {
+    for (let y = 0; y < MAP_HEIGHT; y++) {
+      for (let x = 0; x < MAP_WIDTH; x++) {
+        terrain[y][x] = data.terrain[y][x];
+      }
+    }
+    draw();
+    drawMinimapTerrain();  // 🆕 Draw background only once
+
+  }
+});
+
+function drawGrid(vx, vy) {
+  const cols = Math.ceil(canvas.width / TILE_SIZE);
+  const rows = Math.ceil(canvas.height / TILE_SIZE);
+  const rounded_vx = Math.floor(vx);
+  const rounded_vy = Math.floor(vy);
+  x_offset = vx - Math.floor(vx);
+  y_offset = vy - Math.floor(vy);
+  for (let x = 0; x < cols; x++) for (let y = 0; y < rows; y++) {
+    const wx = Math.floor(rounded_vx + x), wy = Math.floor(rounded_vy + y);
+    if (wx >= MAP_WIDTH || wy >= MAP_HEIGHT) continue;
+    ctx.fillStyle =
+      terrain[wy][wx] === 1 ? 'gray' :
+      terrain[wy][wx] === 2 ? 'blue' :
+      terrain[wy][wx] === 3 ? 'red' : '#1e1e2f';
+    ctx.fillRect((x * TILE_SIZE) - (x_offset * TILE_SIZE), (y * TILE_SIZE) - (y_offset * TILE_SIZE), TILE_SIZE, TILE_SIZE);
+    ctx.strokeStyle = '#222';
+    ctx.strokeRect((x * TILE_SIZE) - (x_offset * TILE_SIZE), (y * TILE_SIZE) - (y_offset * TILE_SIZE), TILE_SIZE, TILE_SIZE);
+  }
+}
+
+function drawPlayers(vx, vy) {
+  const size = 40.0;
+  for (const id in players) {
+    const p = players[id];
+    const sx = (p.x - vx) * TILE_SIZE;
+    const sy = (p.y - vy) * TILE_SIZE;
+    const src = p.avatar;
+    const img = avatarCache[src];
+    const isDead = deadPlayers[id];
+
+    if (img && img.complete && !avatarFailed[src]) {
+      ctx.save();
+      ctx.filter = isDead ? 'grayscale(100%) brightness(70%)' : 'none';
+      ctx.drawImage(img, sx, sy, size, size);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = isDead ? 'gray' :
+                      p.team === 'red' ? 'red' :
+                      p.team === 'blue' ? 'blue' : 'gray';
+      ctx.fillRect(sx, sy, size, size);
+    }
+
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = p.team === 'red' ? 'red' :
+                      p.team === 'blue' ? 'blue' : 'gray';
+    ctx.strokeRect(sx, sy, size, size);
+
+    if (id === playerId) {
+      ctx.strokeStyle = 'gold';
+      ctx.lineWidth = 4;
+      ctx.strokeRect(sx, sy, size, size);
+    }
+
+    ctx.fillStyle = 'white';
+    ctx.font = '12px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(id, sx + size / 2, sy - 5);
+
+    if (isDead) {
+      ctx.fillStyle = 'yellow';
+      const txt = respawnTimers[id] !== undefined ? `Respawn: ${respawnTimers[id]}` : 'DEAD';
+      ctx.fillText(txt, sx + size / 2, sy + size + 15);
+    }
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const vx = Math.max(0, Math.min(pos.x - canvas.width / (TILE_SIZE * 2.0), MAP_WIDTH - canvas.width / TILE_SIZE));
+  const vy = Math.max(0, Math.min(pos.y - canvas.height / (TILE_SIZE * 2.0), MAP_HEIGHT - canvas.height / TILE_SIZE));
+  drawGrid(vx, vy);
+  drawPlayers(vx, vy);
+}
+
+
+
+
+
+const miniCtx = minimap.getContext('2d');
+function drawMinimap(players) {
+  miniCtx.clearRect(0, 0, minimap.width, minimap.height);
+
+  // 🖼️ First, draw cached terrain
+  miniCtx.drawImage(minimapTerrain, 0.0, 0.0);
+
+  // 🧍 Then draw players
+  Object.values(players).forEach(player => {
+    let miniX = (player.x / MAP_WIDTH) * minimap.width;
+    let miniY = (player.y / MAP_HEIGHT) * minimap.height;
+
+    miniCtx.beginPath();
+    let radius = (player.id === playerId) ? 5 : 3;
+    miniCtx.arc(miniX, miniY, radius, 0, Math.PI * 2);
+    miniCtx.fillStyle = player.team === 'red' ? '#ff5050' :
+                        player.team === 'blue' ? '#4ea1ff' : '#ffffff';
+    miniCtx.fill();
+  });
+}
+
+function drawMinimapTerrain() {
+  minimapTerrainCtx.clearRect(0, 0, minimap.width, minimap.height);
+
+  const rows = terrain.length;
+  const cols = terrain[0].length;
+  const cellWidth = minimap.width / cols;
+  const cellHeight = minimap.height / rows;
+
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      if (terrain[y][x] === 1) { // Wall
+        minimapTerrainCtx.fillStyle = '#888';
+      } else if (terrain[y][x] === 2) { // Blue team safe zone
+        minimapTerrainCtx.fillStyle = 'rgba(78, 161, 255, 0.4)';
+      } else if (terrain[y][x] === 3) { // Red team safe zone
+        minimapTerrainCtx.fillStyle = 'rgba(255, 80, 80, 0.4)';
+      } else {
+        continue;
+      }
+      minimapTerrainCtx.fillRect(x * cellWidth, y * cellHeight, cellWidth, cellHeight);
+    }
+  }
+}
+
+
+</script>
+
+</body>
+</html>

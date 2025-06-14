@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<h2>Your Wins: {{ wins }}</h2>
+<head>
+  <meta charset="UTF-8">
+  <title>Your Profile</title>
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='login.css') }}">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Segoe UI', sans-serif;
+      background: linear-gradient(to right, #141e30, #243b55);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      color: #fff;
+    }
+    .profile-box {
+      background: rgba(0,0,0,0.8);
+      padding: 30px;
+      border-radius: 12px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.5);
+      width: 320px;
+      text-align: center;
+    }
+    .profile-box h1 {
+      margin-bottom: 20px;
+      font-size: 24px;
+    }
+    .avatar-preview {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      object-fit: cover;
+      border: 2px solid #fff;
+      margin-bottom: 20px;
+    }
+    .profile-box input[type="file"] {
+      margin-bottom: 20px;
+      color: #fff;
+    }
+    .profile-box button {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      background-color: #4f46e5;
+      color: #fff;
+      font-size: 1rem;
+      cursor: pointer;
+    }
+    .profile-box button:hover {
+      background-color: #6366f1;
+    }
+  </style>
+</head>
+<body>
+  <div class="profile-box">
+    <h1>Your Profile</h1>
+    <img
+      src="{{ url_for('static', filename='avatars/' + (current_user.get('avatar') or 'default_red.jpg')) }}"
+      alt="Avatar"
+      class="avatar-preview"
+    >
+    <form action="{{ url_for('auth.profile') }}" method="post" enctype="multipart/form-data">
+      <input type="file" name="avatar" accept=".jpg,.jpeg,.png" required>
+      <button type="submit">Upload Avatar</button>
+    </form>
+    <p style="margin-top:15px;"><a href="{{ url_for('lobby') }}" style="color:#a5b4fc;">← Back to Lobby</a></p>
+  </div>
+</body>
+</html>
